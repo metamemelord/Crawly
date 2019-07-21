@@ -1,6 +1,6 @@
 impl/
 Workers/
 Data/
-Input/
+input/
 config.json
 main

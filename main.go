@@ -6,18 +6,34 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"os/signal"
 	"path"
 	"strconv"
 	"strings"
+	"syscall"
 
 	crawlerconfig "./Config"
 	crawler "./CrawlWrapper"
+	urlprovider "./UrlProviderService"
 	fwwc "./WriteFiles"
 )
 
+func applicationCloseHandler() {
+	c := make(chan os.Signal, 2)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+		fmt.Println("")
+		log.Println("Closing application")
+		os.Exit(0)
+	}()
+}
+
 func main() {
+	applicationCloseHandler()
 	globalDataChannel := make(chan []byte)
 	globalWriteToFileChannel := make(chan []byte)
+	urlsFromFileChannel := make(chan string)
 	var appConfig *crawlerconfig.Config
 	appConfig, err := crawlerconfig.Load()
 	if err != nil {
@@ -26,6 +42,11 @@ func main() {
 		workersDirectoryPath, _ := bufio.NewReader(os.Stdin).ReadString('\n')
 		workersDirectoryPath = strings.Trim(workersDirectoryPath, "\n")
 		appConfig.CrawlersDirectory = workersDirectoryPath
+
+		fmt.Print("Enter path to directory with URL files: ")
+		urlDirectoryPath, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+		urlDirectoryPath = strings.Trim(urlDirectoryPath, "\n")
+		appConfig.URLFilesDirectory = urlDirectoryPath
 
 		err = fmt.Errorf("Invalid number of records (Minimum is 5)")
 		var recordsPerFile int
@@ -70,37 +91,38 @@ func main() {
 
 	crawlerPath := path.Join(appConfig.CrawlersDirectory, files[crawlerNumber].Name())
 
-	var crawlingWorker crawler.Crawler
-	go func(ch chan<- []byte, crawlingScriptPath string) {
-		crawlingWorker = &crawler.Worker{Language: "python", ScriptPath: crawlingScriptPath}
-		crawledData, err := crawlingWorker.Crawl("https://oyaop.com/opportunity/scholarships-and-fellowships/fully-funded-icwa-fellowship-program-2019-in-usa/")
-		if err != nil {
-			log.Fatal(err.Error())
+	crawlingWorker, err := crawler.GetCrawler(crawlerPath)
+
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	urlprovider.Init(appConfig.URLFilesDirectory)
+	go urlprovider.GetUrls(urlsFromFileChannel)
+
+	go func(crawledDataPipe chan<- []byte, crawlingUrlChannel <-chan string) {
+		for url := range crawlingUrlChannel {
+			crawledData, err := crawlingWorker.Crawl(url)
+			if err != nil {
+				log.Printf("Failed while crawling %s: '%s'.\n", url, err.Error())
+			} else {
+				go func(dataPipe chan<- []byte, data []byte) {
+					dataPipe <- crawledData
+				}(crawledDataPipe, crawledData)
+				log.Println("Successfully crawled", url)
+			}
 		}
-		ch <- crawledData
-		ch <- crawledData
-		ch <- crawledData
-		ch <- crawledData
-		ch <- crawledData
-		ch <- crawledData
-		ch <- crawledData
-		ch <- crawledData
-		ch <- crawledData
-		ch <- crawledData
-		ch <- crawledData
-		ch <- crawledData
-		ch <- crawledData
-		ch <- crawledData
-		ch <- crawledData
-		log.Println("Successfully crawled", "https://oyaop.com/opportunity/scholarships-and-fellowships/fully-funded-icwa-fellowship-program-2019-in-usa/")
-	}(globalDataChannel, crawlerPath)
+	}(globalDataChannel, urlsFromFileChannel)
 
 	go fileWriter.Write(globalWriteToFileChannel, strings.Split(files[crawlerNumber].Name(), ".")[0])
 
 	valuesCounter := 0
 	var intermediateBuffer = []byte("[")
 	for values := range globalDataChannel {
-		if valuesCounter == 5 {
+		intermediateBuffer = append(intermediateBuffer, values...)
+		intermediateBuffer = append(intermediateBuffer, []byte(",")...)
+		valuesCounter++
+		if valuesCounter == appConfig.RecordsPerFile {
 			intermediateBuffer = intermediateBuffer[:len(intermediateBuffer)-1]
 			intermediateBuffer = append(intermediateBuffer, []byte("]")...)
 			go func(ch chan<- []byte, dataChunk []byte) {
@@ -108,10 +130,6 @@ func main() {
 			}(globalWriteToFileChannel, intermediateBuffer)
 			intermediateBuffer = []byte("[")
 			valuesCounter = 0
-		} else {
-			intermediateBuffer = append(intermediateBuffer, values...)
-			intermediateBuffer = append(intermediateBuffer, []byte(",")...)
-			valuesCounter++
 		}
 	}
 }

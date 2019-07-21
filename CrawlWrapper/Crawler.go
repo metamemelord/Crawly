@@ -2,8 +2,10 @@
 package crawler
 
 import (
+	"errors"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 //Crawler interface provides Crawl function to accept a URL and return crawled data and error
@@ -23,4 +25,23 @@ func (w *Worker) Crawl(url string) ([]byte, error) {
 	crawlWorker.Stderr = os.Stderr
 	result, err := crawlWorker.Output()
 	return result, err
+}
+
+func GetCrawler(scriptPath string) (*Worker, error) {
+	scriptPathTokens := strings.Split(scriptPath, ".")
+	extension := scriptPathTokens[len(scriptPathTokens)-1]
+	var runtime string
+	switch strings.ToLower(extension) {
+	case "py":
+		runtime = "python"
+	case "js":
+		runtime = "node"
+	default:
+		runtime = ""
+	}
+	if runtime != "" {
+		return &Worker{Language: runtime, ScriptPath: scriptPath}, nil
+	} else {
+		return nil, errors.New("Application does not support this crawler type")
+	}
 }

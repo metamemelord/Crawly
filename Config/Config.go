@@ -9,6 +9,7 @@ import (
 
 type Config struct {
 	CrawlersDirectory string `json:"crawlers_directory"`
+	URLFilesDirectory string `json:"url_files_directory"`
 	RecordsPerFile    int    `json:"records_per_file"`
 }
 
